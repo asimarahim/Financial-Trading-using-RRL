@@ -100,7 +100,7 @@ def gradient_accent(asset_returns: torch.Tensor,
     # Return the rewards, returns, and Ft values as a tuple
     return rewards, returns, Ft
 
-def train(prices: torch.Tensor, m: int, t: int, delta: float = 0, max_iter: int = 100, lr: float = 0.1):
+def train1d(prices: torch.Tensor, m: int, t: int, delta: float = 0, max_iter: int = 100, lr: float = 0.1):
     # Check that the input tensor is 1-dimensional
     assert len(prices.size()) == 1
     # Compute the asset returns as the ratio of the change in price to the previous price
@@ -139,3 +139,63 @@ def train(prices: torch.Tensor, m: int, t: int, delta: float = 0, max_iter: int 
         ) - 1) * 100,
         "train_Ft": train_Ft
     }
+
+def train(prices: torch.Tensor, m: int, t: int, delta: float = 0, max_iter: int = 100, lr: float = 0.1):
+    assert len(prices.size()) >= 2  # ensure prices tensor has at least two dimensions
+    if len(prices.size()) > 2:
+        # If prices tensor has more than two dimensions, reshape it to a 2D tensor
+        prices = prices.view(-1, prices.size(-1))
+        
+    # asset returns are the ratio of the amount of change to the previous price
+    asset_returns = (
+        prices[:, 1:] - prices[:, :-1]
+    ).float() / prices[:, :-1]
+    
+    # to_be_predicted = prices.shape[1] - t - m
+    scaler = StandardScaler()
+    
+    # Normalize the asset returns for the training period (m + t)
+    normalized_asset_returns = torch.tensor(scaler.fit_transform(
+        asset_returns[:, :m+t].numpy()
+    )).float()
+    
+    # Train the model using gradient ascent
+    model = RRLModel(m)
+    train_rewards, train_returns, train_Ft = gradient_accent(
+        asset_returns, normalized_asset_returns, model, max_iter, lr
+    )
+    
+    # Normalize the asset returns for the validation period (t)
+    normalized_asset_returns = torch.tensor(
+        scaler.transform(asset_returns[:, m+t:].numpy())
+    ).float()
+    
+    # Get the predicted Ft and reward for the validation period
+    Ft_ahead = update_Ft(normalized_asset_returns, model)
+    returns_ahead, reward_ahead = reward_function(asset_returns[:, t:], 1., delta, Ft_ahead, model.m)
+    
+    # Compute the percentage returns for the validation and training periods
+    valid_asset_percentage_returns = (torch.exp(
+        torch.log(1 + asset_returns[:, m+t:]).cumsum(dim=-1)
+    ) - 1) * 100
+    
+    valid_percentage_returns = (torch.exp(
+        torch.log(1 + returns_ahead).cumsum(dim=-1)
+    ) - 1) * 100
+    
+    train_percentage_returns = (torch.exp(
+        torch.log(1 + train_returns).cumsum(dim=-1)
+    ) - 1) * 100
+    
+    # Return a dictionary of results
+    return {
+        "valid_reward": reward_ahead,
+        "valid_Ft": Ft_ahead,
+        "valid_asset_returns": asset_returns[:, m+t:],
+        "valid_asset_percentage_returns": valid_asset_percentage_returns,
+        "valid_percentage_returns": valid_percentage_returns,
+        "rewards_iter": train_rewards,
+        "train_percentage_returns": train_percentage_returns,
+        "train_Ft": train_Ft
+    }
+
